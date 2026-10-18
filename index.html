@@ -21,20 +21,24 @@ const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&g
 let db,view=null,flt='All';
 const idb=new Promise(r=>{const q=indexedDB.open('rt',1);q.onupgradeneeded=()=>{q.result.createObjectStore('kv');q.result.createObjectStore('ph')};q.onsuccess=()=>r(q.result)});
 const tx=async(s,m,f)=>{const d=await idb;return new Promise(r=>{const t=d.transaction(s,m),o=f(t.objectStore(s));t.oncomplete=()=>r(o&&o.result)})};
-const save=()=>tx('kv','readwrite',o=>o.put(db,'data')),getPh=id=>tx('ph','readonly',o=>o.get(id));
+const norm=()=>{for(const a of['stringJobs','overgripJobs'])for(const r of db.rackets){const L=db[a].filter(j=>j.racketId==r.id).sort((x,y)=>x.startDate>y.startDate?1:x.startDate<y.startDate?-1:0);L.forEach((j,i)=>{if(L[i+1])j.endDate=L[i+1].startDate})}};
+const save=()=>{norm();return tx('kv','readwrite',o=>o.put(db,'data'))},getPh=id=>tx('ph','readonly',o=>o.get(id));
 const newDb=()=>({schemaVersion:CUR,app:'racket-tracker',rackets:[],stringJobs:[],overgripJobs:[],entries:[],settings:{lastBackupAt:null}});
 const migrate=d=>{while(d.schemaVersion<CUR)d=MIG[d.schemaVersion](d);return d};
 const shrink=f=>new Promise(r=>{const i=new Image;i.onload=()=>{const k=Math.min(1,1000/Math.max(i.width,i.height)),c=document.createElement('canvas');c.width=i.width*k;c.height=i.height*k;c.getContext('2d').drawImage(i,0,0,c.width,c.height);r(c.toDataURL('image/jpeg',.7))};i.src=URL.createObjectURL(f)});
 const savePh=async d=>{if(!d)return null;const id=uid();await tx('ph','readwrite',o=>o.put(d,id));return id};
 const R=id=>db.rackets.find(r=>r.id==id),cur=(a,r)=>db[a].find(j=>j.racketId==r&&!j.endDate);
 const H=f=>db.entries.filter(f).reduce((s,e)=>s+(e.hours||0),0),fh=n=>Math.round(n*100)/100+' h';
-const at=(a,r,d)=>db[a].find(j=>j.racketId==r&&j.startDate<=d&&(!j.endDate||d<=j.endDate))?.id||null;
+const at=(a,r,d)=>{const L=db[a].filter(j=>j.racketId==r).sort((x,y)=>x.startDate>y.startDate?1:-1);return(L.find(j=>d<=(j.endDate||'9999')&&(d>j.startDate||(j==L[0]&&d>=j.startDate)))||{}).id||null};
+const opts=(a,rid)=>[['auto','Auto (by date)'],['none','None'],...db[a].filter(j=>j.racketId==rid).sort((x,y)=>y.startDate>x.startDate?1:-1).map(j=>[j.id,j.startDate+' · '+(j.model||j.mains.model)])];
+const rkT=x=>x.e?((db.stringJobs.find(j=>j.id==x.e.stringJobId)?.startDate==x.d||db.overgripJobs.find(j=>j.id==x.e.overgripJobId)?.startDate==x.d)?2:0):1;
+const cmpT=(x,y)=>{const a=x.e?.createdAt||'',b=y.e?.createdAt||'';return y.d>x.d?1:y.d<x.d?-1:(rkT(y)-rkT(x))||(b>a?1:b<a?-1:0)};
 const sTxt=j=>j?(j.mains.model==j.crosses.model&&j.mains.tensionKg==j.crosses.tensionKg?`${esc(j.mains.model)} @ ${j.mains.tensionKg} kg`:`Mains: ${esc(j.mains.model)} @ ${j.mains.tensionKg} kg<br>Crosses: ${esc(j.crosses.model)} @ ${j.crosses.tensionKg} kg`)+` · ${j.knots} knots`:'No strings yet';
 const ph=j=>j?.photoId?`<img data-p=${j.photoId}>`:'';
 const sh=$('#sh'),close=()=>{sh.hidden=true;sh.innerHTML=''};sh.onclick=e=>{if(e.target==sh)close()};
 function form(title,fs,ok,del){sh.hidden=false;
 sh.innerHTML=`<div class=bx><h3 style="margin-top:0">${title}</h3>${fs.map(f=>{const v=f.v??'';let i;
-if(f.t=='sel')i=`<select name=${f.k}>${f.o.map(o=>`<option ${o==v?'selected':''}>${o}</option>`).join('')}</select>`;
+if(f.t=='sel')i=`<select name=${f.k}>${f.o.map(o=>(([x,l])=>`<option value="${x}" ${x==v?'selected':''}>${esc(l)}</option>`)(Array.isArray(o)?o:[o,o])).join('')}</select>`;
 else if(f.t=='chk')return `<label><input type=checkbox name=${f.k} ${f.v?'checked':''}> ${f.l}</label>`;
 else if(f.t=='area')i=`<textarea name=${f.k} rows=3>${esc(v)}</textarea>`;
 else if(f.t=='photo')i=`<input type=file name=${f.k} accept=image/*>${f.q||f.qm?`<a style="display:block;margin:6px 0" href="https://www.google.com/search?tbm=isch&q=${encodeURIComponent(f.q||'')}" target=_blank ${f.qm?`onclick="this.href='https://www.google.com/search?tbm=isch&q='+encodeURIComponent(document.querySelector('[name=m]').value+' racket')"`:''}>Find stock photo</a>`:''}`;
@@ -45,10 +49,10 @@ $('#ok').onclick=async()=>{const v={};for(const f of fs){const e=sh.querySelecto
 if(del)$('#dl').onclick=async()=>{if(confirm('Delete?')){del();await save();close();render()}}}
 function rackF(id){const r=id&&R(id);form(r?'Edit racket':'Add racket',[{k:'n',l:'Name',v:r?.name},{k:'m',l:'Model',v:r?.model||'Babolat Pure Strike'},{k:'photo',l:'Frame photo',t:'photo',qm:1}],v=>{if(!v.n){alert('Name required');return false}const o=r||{id:uid(),createdAt:now(),archivedAt:null};Object.assign(o,{name:v.n,model:v.m});if(v.photo)o.photoId=v.photo;if(!r)db.rackets.push(o)})}
 function logF(rid,e){const s=cur('stringJobs',rid),g=cur('overgripJobs',rid);
-form(e?'Edit entry':'Log hours / note',[{k:'hours',l:'Hours (e.g. 6.5)',t:'number',v:e?.hours},{k:'date',l:'Date',t:'date',v:e?.date||today()},{k:'note',l:'Note',t:'area',v:e?.note},{k:'photo',l:'Note photo',t:'photo'},{k:'about',l:'About',t:'sel',o:['general','strings','overgrip','frame'],v:e?.about||'general'},{k:'cs',l:'Credit to strings',t:'chk',v:e?!!e.stringJobId:true},{k:'cg',l:'Credit to overgrip',t:'chk',v:e?!!e.overgripJobId:true}],v=>{
+form(e?'Edit entry':'Log hours / note',[{k:'hours',l:'Hours (e.g. 6.5)',t:'number',v:e?.hours},{k:'date',l:'Date',t:'date',v:e?.date||today()},{k:'note',l:'Note',t:'area',v:e?.note},{k:'photo',l:'Note photo',t:'photo'},{k:'about',l:'About',t:'sel',o:['general','strings','overgrip','frame'],v:e?.about||'general'},{k:'sj',l:'Credit hours to strings',t:'sel',o:opts('stringJobs',rid),v:e?e.stringJobId||'none':'auto'},{k:'gj',l:'Credit hours to overgrip',t:'sel',o:opts('overgripJobs',rid),v:e?e.overgripJobId||'none':'auto'}],v=>{
 if(v.hours==null&&!v.note){alert('Enter hours or a note');return false}
 const o=e||{id:uid(),racketId:rid,createdAt:now()};Object.assign(o,{hours:v.hours,date:v.date,note:v.note||null,about:v.about,updatedAt:now()});if(v.photo)o.photoId=v.photo;
-o.stringJobId=v.cs?o.stringJobId||at('stringJobs',rid,v.date):null;o.overgripJobId=v.cg?o.overgripJobId||at('overgripJobs',rid,v.date):null;if(!e)db.entries.push(o)},e&&(()=>db.entries=db.entries.filter(x=>x!=e)))}
+const cr=(x,a)=>x=='auto'?at(a,rid,v.date):x=='none'?null:x;o.stringJobId=cr(v.sj,'stringJobs');o.overgripJobId=cr(v.gj,'overgripJobs');if(!e)db.entries.push(o)},e&&(()=>db.entries=db.entries.filter(x=>x!=e)))}
 const editJ=(k,id)=>{const j=db[k=='s'?'stringJobs':'overgripJobs'].find(x=>x.id==id);jobF(k,'fix',j.racketId,j)};
 const editE=id=>logF(db.entries.find(e=>e.id==id).racketId,db.entries.find(e=>e.id==id));
 function jobF(k,mode,rid,job){const S=k=='s',a=S?'stringJobs':'overgripJobs',c=job||cur(a,rid),p=mode=='past'?null:c,F=[];
@@ -58,7 +62,7 @@ F.push({k:'sd',l:mode=='new'?'Date':'Start date',t:'date',v:mode=='fix'?c.startD
 if(mode=='fix'&&c.endDate)F.push({k:'ed',l:'End date',t:'date',v:c.endDate});
 if(mode=='past')F.push({k:'ed',l:'End date',t:'date',v:today()},{k:'hh',l:'Total hours on it',t:'number'});
 F.push({k:'photo',l:'Photo (optional; keeps old if empty)',t:'photo',q:R(rid).model+(S?' strung':'')},{k:'nt',l:'Notes',t:'area',v:p?.notes});
-form({new:S?'Restring':'New overgrip',fix:'Edit',past:'Add past job'}[mode],F,v=>{
+form({new:S?'New strings':'New overgrip',fix:'Edit',past:'Add past job'}[mode],F,v=>{
 if(!v.mm){alert('Model required');return false}
 const j={id:uid(),racketId:rid};if(mode=='fix')Object.assign(j,c);
 S?Object.assign(j,{mains:{model:v.mm,tensionKg:v.mt},crosses:v.same?{model:v.mm,tensionKg:v.mt}:{model:v.cm,tensionKg:v.ct},knots:+v.kn}):j.model=v.mm;
@@ -67,7 +71,7 @@ if(mode=='new'){if(c)c.endDate=v.sd;j.endDate=null;db[a].push(j)}
 else if(mode=='past'){j.endDate=v.ed;db[a].push(j);if(v.hh)db.entries.push({id:uid(),racketId:rid,date:v.ed,hours:v.hh,note:null,about:S?'strings':'overgrip',stringJobId:S?j.id:null,overgripJobId:S?null:j.id,createdAt:now(),updatedAt:now()})}
 else{if(v.ed)j.endDate=v.ed;Object.assign(c,j)}},mode=='fix'?()=>{const f=S?'stringJobId':'overgripJobId';db[a]=db[a].filter(x=>x!=c);db.entries.forEach(e=>{if(e[f]==c.id)e[f]=null})}:null)}
 function menu(rid){const s=cur('stringJobs',rid),g=cur('overgripJobs',rid);
-const I=[['Edit racket details',()=>rackF(rid)],['Restring',()=>jobF('s','new',rid)],['New overgrip',()=>jobF('g','new',rid)],...(s?[['Correct current strings',()=>jobF('s','fix',rid)]]:[]),...(g?[['Correct current overgrip',()=>jobF('g','fix',rid)]]:[]),['Add past strings',()=>jobF('s','past',rid)],['Add past overgrip',()=>jobF('g','past',rid)],['Edit past entries',()=>{go(rid);setTimeout(()=>$('#tl')?.scrollIntoView(),50)}],['Remove racket',async()=>{if(confirm('OK = hide racket but keep its history.\nCancel = delete everything.'))R(rid).archivedAt=now();else if(confirm('Delete racket and ALL its data?')){db.rackets=db.rackets.filter(r=>r.id!=rid);for(const a of['stringJobs','overgripJobs','entries'])db[a]=db[a].filter(x=>x.racketId!=rid)}else return;await save();view=null;render()}]];
+const I=[['Edit racket details',()=>rackF(rid)],['New strings',()=>jobF('s','new',rid)],['New overgrip',()=>jobF('g','new',rid)],['Add past strings',()=>jobF('s','past',rid)],['Add past overgrip',()=>jobF('g','past',rid)],['Remove racket',async()=>{if(confirm('OK = hide racket but keep its history.\nCancel = delete everything.'))R(rid).archivedAt=now();else if(confirm('Delete racket and ALL its data?')){db.rackets=db.rackets.filter(r=>r.id!=rid);for(const a of['stringJobs','overgripJobs','entries'])db[a]=db[a].filter(x=>x.racketId!=rid)}else return;await save();view=null;render()}]];
 sh.hidden=false;sh.innerHTML=`<div class=bx>${I.map((x,i)=>`<button style="display:block;width:100%;margin:6px 0;text-align:left" data-i=${i}>${x[0]}</button>`).join('')}</div>`;sh.querySelectorAll('button').forEach(b=>b.onclick=()=>{const f=I[b.dataset.i][1];close();f()})}
 const go=id=>{view=id;flt='All';render();scrollTo(0,0)};
 function card(r){const s=cur('stringJobs',r.id),g=cur('overgripJobs',r.id),d=s?Math.floor((Date.now()-new Date(s.startDate))/864e5):0;
@@ -79,12 +83,12 @@ db.overgripJobs.filter(j=>j.racketId==id).forEach(j=>T.push({d:j.startDate,t:'g'
 const ok=x=>flt=='All'||(flt=='Hours'&&x.e?.hours!=null)||(flt=='Notes'&&x.e?.note)||(flt=='Strings'&&(x.t=='s'||x.e?.about=='strings'))||(flt=='Overgrip'&&(x.t=='g'||x.e?.about=='overgrip'));
 const hist=(a,f)=>db[a].filter(j=>j.racketId==id&&j.endDate).sort((x,y)=>y.endDate>x.endDate?1:-1).map(j=>`<div class=tl onclick="editJ('${a=='stringJobs'?'s':'g'}','${j.id}')">${ph(j)}<span class=m style="float:right">✎ edit</span><b>${j.startDate} → ${j.endDate}</b> · ${fh(H(e=>e[f]==j.id))}<br>${a=='stringJobs'?sTxt(j):esc(j.model)}${j.notes?`<br><span class=m>${esc(j.notes)}</span>`:''}</div>`).join('')||'<p class=m>None yet</p>';
 const cmp={};db.stringJobs.filter(j=>j.racketId==id).forEach(j=>{const k=`${j.mains.model} @ ${j.mains.tensionKg} kg / ${j.crosses.model} @ ${j.crosses.tensionKg} kg`,x=cmp[k]||(cmp[k]={h:0,n:0});x.h+=H(e=>e.stringJobId==j.id);x.n++});
-return `<button onclick="go(null)">← Back</button><div style="height:10px"></div>${card(r)}${(g=>g?.photoId?`<div class=m>Current overgrip</div>${ph(g)}`:'')(cur('overgripJobs',id))}<h3 id=tl>Timeline <span class=m style="font-weight:400;font-size:13px">(tap an item to edit)</span></h3><div class=row>${['All','Hours','Strings','Overgrip','Notes'].map(c=>`<button class="chip ${c==flt?'on':''}" onclick="flt='${c}';render()">${c}</button>`).join('')}</div>${T.filter(ok).sort((x,y)=>y.d>x.d?1:-1).map(x=>`<div class=tl>${x.h}</div>`).join('')||'<p class=m>Nothing yet</p>'}<h3>String history</h3>${hist('stringJobs','stringJobId')}<h3>Overgrip history</h3>${hist('overgripJobs','overgripJobId')}<h3>Hours per setup</h3>${Object.entries(cmp).map(([k,x])=>`<p>${esc(k)}<br><b>${fh(x.h)}</b> over ${x.n} job${x.n>1?'s':''}</p>`).join('')||'<p class=m>None yet</p>'}`}
+return `<button onclick="go(null)">← Back</button><div style="height:10px"></div>${card(r)}${(g=>g?.photoId?`<div class=m>Current overgrip</div>${ph(g)}`:'')(cur('overgripJobs',id))}<h3 id=tl>Timeline <span class=m style="font-weight:400;font-size:13px">(tap an item to edit)</span></h3><div class=row>${['All','Hours','Strings','Overgrip','Notes'].map(c=>`<button class="chip ${c==flt?'on':''}" onclick="flt='${c}';render()">${c}</button>`).join('')}</div>${T.filter(ok).sort(cmpT).map(x=>`<div class=tl>${x.h}</div>`).join('')||'<p class=m>Nothing yet</p>'}<h3>String history</h3>${hist('stringJobs','stringJobId')}<h3>Overgrip history</h3>${hist('overgripJobs','overgripJobId')}<h3>Hours per setup</h3>${Object.entries(cmp).map(([k,x])=>`<p>${esc(k)}<br><b>${fh(x.h)}</b> over ${x.n} job${x.n>1?'s':''}</p>`).join('')||'<p class=m>None yet</p>'}`}
 function render(){const m=$('#m'),r=view&&R(view);m.innerHTML=r?detail(view):(rk().map(card).join('')||'<p class=m>Tap “+ Racket” to start.</p>');document.querySelectorAll('img[data-p]').forEach(async i=>i.src=await getPh(i.dataset.p)||'')}
 const rk=()=>db.rackets.filter(r=>!r.archivedAt);
 function settings(){sh.hidden=false;sh.innerHTML=`<div class=bx><h3 style="margin-top:0">Backup</h3><p class=m>Last backup: ${db.settings.lastBackupAt?.slice(0,10)||'never'}<br>Schema v${db.schemaVersion}</p><button class=p onclick="exp(1)">Export with photos</button> <button onclick="exp(0)">Export without</button><label>Import backup (replaces current data)</label><input type=file accept=.json onchange="imp(this.files[0])"></div>`}
 async function exp(withP){const d=JSON.parse(JSON.stringify(db));d.exportedAt=now();if(withP){const k=await tx('ph','readonly',o=>o.getAllKeys()),v=await tx('ph','readonly',o=>o.getAll());d.photos=Object.fromEntries(k.map((x,i)=>[x,v[i]]))}
 const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([JSON.stringify(d)],{type:'application/json'}));a.download='racket-tracker-'+today()+'.json';a.click();db.settings.lastBackupAt=now();await save();close()}
 async function imp(f){if(!f||!confirm('Replace all current data?'))return;try{let d=JSON.parse(await f.text());if(d.app!='racket-tracker'||d.schemaVersion>CUR)throw 0;for(const[k,v]of Object.entries(d.photos||{}))await tx('ph','readwrite',o=>o.put(v,k));delete d.photos;db=migrate(d);await save();close();view=null;render()}catch{alert('Not a valid backup for this app version')}}
-(async()=>{db=migrate(await tx('kv','readonly',o=>o.get('data'))||newDb());navigator.storage?.persist?.();navigator.serviceWorker?.register('sw.js');render()})();
+(async()=>{db=migrate(await tx('kv','readonly',o=>o.get('data'))||newDb());norm();navigator.storage?.persist?.();navigator.serviceWorker?.register('sw.js');render()})();
 </script></body></html>
